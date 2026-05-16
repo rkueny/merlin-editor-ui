@@ -59,7 +59,7 @@ excluded_qt = [
 ]
 
 a = Analysis(
-    ["merlin_gui/app.py"],
+    ["run.py"],
     pathex=[],
     binaries=bundled_binaries,
     datas=bundled_datas,
