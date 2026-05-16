@@ -30,7 +30,6 @@ excluded_qt = [
     "PySide6.Qt3DInput",
     "PySide6.Qt3DLogic",
     "PySide6.Qt3DRender",
-    "PySide6.QtNetwork",
     "PySide6.QtNfc",
     "PySide6.QtOpcUa",
     "PySide6.QtPdf",
@@ -46,7 +45,6 @@ excluded_qt = [
     "PySide6.QtSerialBus",
     "PySide6.QtSerialPort",
     "PySide6.QtSpatialAudio",
-    "PySide6.QtSql",
     "PySide6.QtStateMachine",
     "PySide6.QtTest",
     "PySide6.QtTextToSpeech",
@@ -57,6 +55,8 @@ excluded_qt = [
     "PySide6.QtWebSockets",
     "PySide6.QtXml",
 ]
+# QtNetwork is needed by QtMultimedia. QtSql is sometimes pulled in transitively
+# by Qt plugins — keep both for safety.
 
 a = Analysis(
     ["run.py"],
