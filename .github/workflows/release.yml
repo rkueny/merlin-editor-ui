@@ -1,0 +1,103 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to create the GitHub Release
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: merlin-editor-macos
+            package_cmd: |
+              cd dist
+              ditto -c -k --sequesterRsrc --keepParent "Merlin Editor.app" merlin-editor-macos.zip
+          - os: ubuntu-latest
+            artifact_name: merlin-editor-linux
+            package_cmd: |
+              cd dist
+              tar -czf merlin-editor-linux.tar.gz merlin-editor
+          - os: windows-latest
+            artifact_name: merlin-editor-windows
+            package_cmd: |
+              cd dist
+              Compress-Archive -Path merlin-editor -DestinationPath merlin-editor-windows.zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 Pillow pyinstaller
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm --clean merlin-editor.spec
+
+      - name: Package
+        shell: bash
+        if: matrix.os != 'windows-latest'
+        run: ${{ matrix.package_cmd }}
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ${{ matrix.package_cmd }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/merlin-editor-macos.zip
+            dist/merlin-editor-linux.tar.gz
+            dist/merlin-editor-windows.zip
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **macOS** — download `merlin-editor-macos.zip`, unzip, drag `Merlin Editor.app` to Applications. First launch: right-click → Open (Gatekeeper bypass — the app is not notarised).
+
+            **Linux** — download `merlin-editor-linux.tar.gz`, extract, run `./merlin-editor/merlin-editor`.
+
+            **Windows** — download `merlin-editor-windows.zip`, extract, run `merlin-editor\merlin-editor.exe`.
+
+            ## Requirements
+
+            All platforms need **ffmpeg** in PATH for audio conversion:
+            - macOS: `brew install ffmpeg`
+            - Linux: `sudo apt install ffmpeg` (or your distro's equivalent)
+            - Windows: `choco install ffmpeg` or download from https://ffmpeg.org/

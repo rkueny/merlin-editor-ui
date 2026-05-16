@@ -1,0 +1,19 @@
+[project]
+name = "merlin-gui"
+version = "0.1.0"
+description = "GUI editor for the Merlin storytelling speaker (Bayard / Radio France)"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6",
+    "Pillow>=10.0",
+]
+
+[project.scripts]
+merlin-gui = "merlin_gui.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["merlin_gui*"]
