@@ -10,25 +10,23 @@ Built on top of [IArchi/Merlin-jailbreak](https://github.com/IArchi/Merlin-jailb
 
 Grab the latest release from the **[Releases page](../../releases)**.
 
+**ffmpeg is bundled** — no extra install required.
+
 ### macOS
 
 1. Download `merlin-editor-macos.zip`, unzip.
 2. Drag **Merlin Editor.app** into `/Applications`.
 3. First launch: **right-click the app → Open** (Gatekeeper blocks unsigned apps; this confirms you trust it).
-4. Install ffmpeg: `brew install ffmpeg`.
 
 ### Linux
 
 1. Download `merlin-editor-linux.tar.gz`, extract.
 2. Run `./merlin-editor/merlin-editor`.
-3. Install ffmpeg: `sudo apt install ffmpeg` (or `dnf install ffmpeg`, etc.).
 
 ### Windows
 
 1. Download `merlin-editor-windows.zip`, extract.
 2. Run `merlin-editor\merlin-editor.exe`.
-3. Install ffmpeg: `choco install ffmpeg` or grab a build from <https://ffmpeg.org/>
-   and put `ffmpeg.exe` somewhere in `PATH`.
 
 ## Workflow
 
@@ -50,7 +48,9 @@ python3 -m venv .venv
 .venv/bin/merlin-gui
 ```
 
-Requires Python 3.10+, PySide6, Pillow, ffmpeg.
+Requires Python 3.10+, PySide6, Pillow. For local dev, install ffmpeg via your
+package manager (`brew install ffmpeg`, `apt install ffmpeg`, etc.) — the
+released bundles ship their own ffmpeg.
 
 ## Release
 
@@ -82,4 +82,11 @@ vendor/
 merlin-editor.spec   # PyInstaller config (cross-platform)
 .github/workflows/
   release.yml      # macOS/Linux/Windows build + release
+THIRD_PARTY_NOTICES.md  # FFmpeg/PySide6/Pillow attributions
 ```
+
+## Third-party
+
+See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md). The bundles ship
+FFmpeg (LGPLv2.1+ on macOS/Windows, GPLv3 on Linux); source for FFmpeg is
+available at <https://github.com/FFmpeg/FFmpeg>.

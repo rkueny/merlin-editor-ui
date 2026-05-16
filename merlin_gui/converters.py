@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from PIL import Image
@@ -21,21 +22,51 @@ class ConversionError(RuntimeError):
     pass
 
 
+def _bundled_ffmpeg() -> Path | None:
+    """Look for an ffmpeg binary shipped next to the running executable."""
+    if getattr(sys, "frozen", False):
+        candidates = [Path(sys.executable).parent]
+        # PyInstaller adds _MEIPASS for the temp extraction dir of one-file builds.
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass))
+    else:
+        candidates = [Path(__file__).resolve().parent.parent / "bin"]
+
+    name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    for d in candidates:
+        p = d / name
+        if p.is_file():
+            return p
+    return None
+
+
+def ffmpeg_path() -> str | None:
+    bundled = _bundled_ffmpeg()
+    if bundled is not None:
+        return str(bundled)
+    return shutil.which("ffmpeg")
+
+
 def ffmpeg_available() -> bool:
-    return shutil.which("ffmpeg") is not None
+    return ffmpeg_path() is not None
 
 
 def to_merlin_audio(src: Path, dst: Path) -> None:
     """Convert any audio file to MP3 stereo 128kbps at dst."""
-    if not ffmpeg_available():
-        raise FFmpegMissing("ffmpeg not found in PATH. Install with `brew install ffmpeg`.")
+    binary = ffmpeg_path()
+    if binary is None:
+        raise FFmpegMissing(
+            "ffmpeg not found. The app should ship with a bundled ffmpeg — "
+            "if you see this in a packaged build, please file an issue."
+        )
 
     src = Path(src)
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "ffmpeg",
+        binary,
         "-y",
         "-i", str(src),
         "-vn",

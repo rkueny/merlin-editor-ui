@@ -2,10 +2,21 @@
 """PyInstaller spec for Merlin Editor (macOS / Linux / Windows)."""
 
 import sys
+from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
+
+# Pick up a bundled ffmpeg if the build pipeline placed one in bin/.
+ffmpeg_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+ffmpeg_src = Path("bin") / ffmpeg_name
+bundled_binaries = []
+bundled_datas = []
+if ffmpeg_src.is_file():
+    bundled_binaries.append((str(ffmpeg_src), "."))
+if Path("THIRD_PARTY_NOTICES.md").is_file():
+    bundled_datas.append(("THIRD_PARTY_NOTICES.md", "."))
 
 # Exclude Qt modules we don't use to shave ~80MB off the bundle.
 excluded_qt = [
@@ -50,8 +61,8 @@ excluded_qt = [
 a = Analysis(
     ["merlin_gui/app.py"],
     pathex=[],
-    binaries=[],
-    datas=[],
+    binaries=bundled_binaries,
+    datas=bundled_datas,
     hiddenimports=collect_submodules("PySide6.QtMultimedia"),
     hookspath=[],
     runtime_hooks=[],
