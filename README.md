@@ -16,7 +16,9 @@ Grab the latest release from the **[Releases page](../../releases)**.
 
 1. Download `merlin-editor-macos.zip`, unzip.
 2. Drag **Merlin Editor.app** into `/Applications`.
-3. First launch: **right-click the app → Open** (Gatekeeper blocks unsigned apps; this confirms you trust it).
+3. **First launch** — Gatekeeper will block the app ("Apple could not verify…"). Bypass with either:
+   - **Terminal** (fastest): `xattr -dr com.apple.quarantine "/Applications/Merlin Editor.app"` then double-click.
+   - **GUI**: click *Done* on the warning, then open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** next to the Merlin Editor entry.
 
 ### Linux
 
