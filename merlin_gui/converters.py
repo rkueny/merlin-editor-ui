@@ -80,6 +80,29 @@ def to_merlin_audio(src: Path, dst: Path) -> None:
         raise ConversionError(f"ffmpeg failed for {src.name}:\n{result.stderr[-2000:]}")
 
 
+def extract_embedded_cover(audio_src: Path, dst: Path) -> bool:
+    """Extract embedded cover art (ID3v2 APIC, etc.) from an audio file.
+    Returns True if a cover was written to dst, False otherwise.
+    """
+    binary = ffmpeg_path()
+    if binary is None:
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+    cmd = [
+        binary,
+        "-y",
+        "-i", str(audio_src),
+        "-an",
+        "-vframes", "1",
+        "-c:v", "mjpeg",
+        str(dst),
+    ]
+    result = subprocess.run(cmd, capture_output=True)
+    return result.returncode == 0 and dst.exists() and dst.stat().st_size > 0
+
+
 def to_merlin_image(src: Path, dst: Path) -> None:
     """Convert any image to JPEG 128x128 padded to square (black background)."""
     src = Path(src)

@@ -10,6 +10,7 @@ from PySide6.QtCore import QRectF, QSize, Qt, QUrl
 from PySide6.QtGui import QAction, QPainter, QPainterPath, QPixmap
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -35,6 +37,7 @@ from PySide6.QtWidgets import (
 from .converters import (
     ConversionError,
     FFmpegMissing,
+    extract_embedded_cover,
     ffmpeg_available,
     is_audio,
     is_image,
@@ -348,11 +351,31 @@ class MainWindow(QMainWindow):
     def _save_to(self, target: Path) -> None:
         if self.root is None:
             return
+
+        progress = QProgressDialog("Saving…", None, 0, 1, self)
+        progress.setWindowTitle("Save")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(200)
+        progress.setAutoClose(True)
+        progress.setAutoReset(True)
+        progress.setCancelButton(None)  # save shouldn't be cancellable mid-write
+        progress.setValue(0)
+
+        def report(done: int, total: int, label: str) -> None:
+            progress.setMaximum(total)
+            progress.setValue(done)
+            progress.setLabelText(f"Saving {label}  ({done}/{total})")
+            QApplication.processEvents()
+
         try:
-            save_playlist(self.root, target)
+            save_playlist(self.root, target, progress=report)
         except Exception as e:
+            progress.cancel()
             QMessageBox.critical(self, "Save failed", str(e))
             return
+        finally:
+            progress.close()
+
         self.source_dir = target
         self.setWindowTitle(f"Merlin Editor — {target.name}")
         self.statusBar().showMessage(f"Saved to {target}", 5000)
@@ -518,50 +541,35 @@ class MainWindow(QMainWindow):
             )
             return
 
-        audio_src, _ = QFileDialog.getOpenFileName(
+        sources, _ = QFileDialog.getOpenFileNames(
             self,
-            "Pick audio",
+            "Pick audio files",
             "",
             "Audio (*.mp3 *.m4a *.aac *.wav *.flac *.ogg *.opus *.aiff *.aif *.wma)",
         )
-        if not audio_src:
-            return
-        image_src, _ = QFileDialog.getOpenFileName(
-            self,
-            "Pick image",
-            "",
-            "Images (*.jpg *.jpeg *.png *.gif *.bmp *.webp *.tiff *.heic *.heif)",
-        )
-        if not image_src:
-            return
-
-        suggested = Path(audio_src).stem
-        title, ok = QInputDialog.getText(self, "Story title", "Title:", text=suggested)
-        if not ok or not title.strip():
-            return
-
-        new_uuid = str(uuid_lib.uuid4())
-        audio_dst = self.tmp_dir / f"{new_uuid}.mp3"
-        image_dst = self.tmp_dir / f"{new_uuid}.jpg"
-
-        self.statusBar().showMessage("Converting…")
-        try:
-            to_merlin_audio(Path(audio_src), audio_dst)
-            to_merlin_image(Path(image_src), image_dst)
-        except (FFmpegMissing, ConversionError) as e:
-            QMessageBox.critical(self, "Conversion failed", str(e))
-            self.statusBar().clearMessage()
+        if not sources:
             return
 
         parent = self._selected_folder_for_insert() or self.root
-        story = new_story(title.strip(), audio_path=audio_dst, image_path=image_dst)
-        story.uuid = new_uuid
-        story.parent = parent
-        parent.children.append(story)
+        paths = [Path(s) for s in sources]
 
-        self._refresh_tree()
-        self._select_node(story)
-        self.statusBar().showMessage(f"Added “{title}”", 5000)
+        # Single file → let user rename. Multiple → use the filename as title.
+        if len(paths) == 1:
+            title, ok = QInputDialog.getText(
+                self, "Story title", "Title:", text=paths[0].stem
+            )
+            if not ok or not title.strip():
+                return
+            tasks = [(paths[0], None, title.strip())]
+        else:
+            tasks = [(p, None, p.stem) for p in paths]
+
+        created = self._batch_convert_and_add(parent, tasks)
+        if created:
+            self._refresh_tree()
+            self._select_node(created[-1])
+            msg = f"Added “{created[0].title}”" if len(created) == 1 else f"Added {len(created)} stories"
+            self.statusBar().showMessage(msg, 5000)
 
     def _on_replace_audio(self) -> None:
         node = self._selected_node()
@@ -666,37 +674,22 @@ class MainWindow(QMainWindow):
 
         # Pair audios with images by basename (same stem)
         images_by_stem = {p.stem.lower(): p for p in images}
-        used_images: set[Path] = set()
-        created: list[Node] = []
+        tasks = [
+            (audio, images_by_stem.get(audio.stem.lower()), audio.stem)
+            for audio in audios
+        ]
+        created = self._batch_convert_and_add(folder, tasks)
 
-        for audio in audios:
-            paired_image = images_by_stem.get(audio.stem.lower())
-            if paired_image is None:
-                # Ask user to pick an image
-                picked, _ = QFileDialog.getOpenFileName(
-                    self,
-                    f"Pick image for {audio.name}",
-                    "",
-                    "Images (*.jpg *.jpeg *.png *.gif *.bmp *.webp *.tiff *.heic *.heif)",
-                )
-                if not picked:
-                    continue
-                paired_image = Path(picked)
-            else:
-                used_images.add(paired_image)
-
-            story = self._convert_and_add_story(folder, audio, paired_image, audio.stem)
-            if story:
-                created.append(story)
-
-        # Orphan images (no paired audio) on a story → not handled (already covered above)
-        # On a folder, an image alone has no use; ignore silently.
+        # Orphan images (no paired audio) on a folder: ignored silently here.
         if created:
             self._refresh_tree()
             self._select_node(created[-1])
-            self.statusBar().showMessage(
-                f"Added {len(created)} story(ies)", 5000
+            msg = (
+                f"Added “{created[0].title}”"
+                if len(created) == 1
+                else f"Added {len(created)} stories"
             )
+            self.statusBar().showMessage(msg, 5000)
 
     def _replace_node_image(self, node: Node, src: Path) -> None:
         dst = self.tmp_dir / f"{node.uuid}.jpg"
@@ -709,8 +702,47 @@ class MainWindow(QMainWindow):
         self._update_editor(node)
         self.statusBar().showMessage(f"Replaced image for “{node.title}”", 4000)
 
+    def _batch_convert_and_add(
+        self,
+        folder: Node,
+        tasks: list[tuple[Path, Path | None, str]],
+    ) -> list[Node]:
+        """Convert+add a list of (audio, image_or_None, title) under folder, with
+        a modal progress dialog and Cancel support."""
+        if not tasks:
+            return []
+
+        progress = QProgressDialog(
+            "Preparing…", "Cancel", 0, len(tasks), self
+        )
+        progress.setWindowTitle("Converting")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(200)  # don't flash for fast single conversions
+        progress.setAutoClose(True)
+        progress.setAutoReset(True)
+        progress.setValue(0)
+
+        created: list[Node] = []
+        for i, (audio_src, image_src, title) in enumerate(tasks):
+            if progress.wasCanceled():
+                break
+            progress.setLabelText(f"Converting {audio_src.name} ({i + 1}/{len(tasks)})…")
+            progress.setValue(i)
+            QApplication.processEvents()
+
+            story = self._convert_and_add_story(folder, audio_src, image_src, title)
+            if story:
+                created.append(story)
+
+        progress.setValue(len(tasks))
+        return created
+
     def _convert_and_add_story(
-        self, folder: Node, audio_src: Path, image_src: Path, suggested_title: str
+        self,
+        folder: Node,
+        audio_src: Path,
+        image_src: Path | None,
+        suggested_title: str,
     ) -> Node | None:
         new_uuid = str(uuid_lib.uuid4())
         audio_dst = self.tmp_dir / f"{new_uuid}.mp3"
@@ -718,12 +750,30 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Converting {audio_src.name}…")
         try:
             to_merlin_audio(audio_src, audio_dst)
-            to_merlin_image(image_src, image_dst)
         except (FFmpegMissing, ConversionError) as e:
             QMessageBox.critical(self, "Conversion failed", str(e))
             return None
 
-        story = new_story(suggested_title, audio_path=audio_dst, image_path=image_dst)
+        final_image: Path | None = None
+        if image_src is not None:
+            try:
+                to_merlin_image(image_src, image_dst)
+                final_image = image_dst
+            except Exception as e:
+                QMessageBox.critical(self, "Image conversion failed", str(e))
+                return None
+        else:
+            # Try to pull the cover art embedded in the audio file.
+            cover_raw = self.tmp_dir / f"{new_uuid}.cover.jpg"
+            if extract_embedded_cover(audio_src, cover_raw):
+                try:
+                    to_merlin_image(cover_raw, image_dst)
+                    final_image = image_dst
+                except Exception:
+                    final_image = None
+                cover_raw.unlink(missing_ok=True)
+
+        story = new_story(suggested_title, audio_path=audio_dst, image_path=final_image)
         story.uuid = new_uuid
         story.parent = folder
         folder.children.append(story)

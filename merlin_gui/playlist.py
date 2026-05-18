@@ -17,6 +17,7 @@ import time
 import uuid as uuid_lib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 # Type codes used in playlist.bin
 TYPE_ROOT = 1
@@ -26,7 +27,18 @@ TYPE_FAVORITES = 10
 TYPE_STORY_ALT = 36  # observed on read for some terminal items
 
 ITEM_SIZE = 152  # 20 header + 65 uuid block + 67 title block
+UUID_MAX_BYTES = 64
+TITLE_MAX_BYTES = 66
 FAVORITES_TITLE = "Merlin_favorite"
+
+
+def _truncate_utf8(s: str, max_bytes: int) -> str:
+    """Return s truncated so its UTF-8 encoding is ≤ max_bytes, never
+    splitting a multi-byte char. Returns s unchanged when it already fits."""
+    encoded = s.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return s
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
 def is_story(type_code: int) -> bool:
@@ -69,6 +81,11 @@ class Node:
 
 
 def _read_item(buf: bytes, offset: int) -> tuple[dict, int]:
+    """Parse one item starting at offset. Lenient on length overflow: if a
+    previous version of the writer produced a uuid or title block longer than
+    nominal (because the title exceeded TITLE_MAX_BYTES), this reader still
+    realigns correctly on the next item.
+    """
     def u16(o):
         return int.from_bytes(buf[o : o + 2], "little")
 
@@ -87,11 +104,13 @@ def _read_item(buf: bytes, offset: int) -> tuple[dict, int]:
     }
     o = offset + 20
     uuid_len = buf[o]
-    item["uuid"] = buf[o + 1 : o + 1 + uuid_len].decode("utf-8")
-    o += 1 + 64
+    item["uuid"] = buf[o + 1 : o + 1 + uuid_len].decode("utf-8", errors="replace")
+    o += 1 + max(UUID_MAX_BYTES, uuid_len)
+
     title_len = buf[o]
-    item["title"] = buf[o + 1 : o + 1 + title_len].decode("utf-8")
-    return item, offset + ITEM_SIZE
+    item["title"] = buf[o + 1 : o + 1 + title_len].decode("utf-8", errors="replace")
+    o += 1 + max(TITLE_MAX_BYTES, title_len)
+    return item, o
 
 
 def _write_item(item: dict) -> bytes:
@@ -105,15 +124,17 @@ def _write_item(item: dict) -> bytes:
     out += item["limit_time"].to_bytes(4, "little")
     out += item["add_time"].to_bytes(4, "little")
 
-    u = item["uuid"].encode("utf-8")
+    uuid_str = _truncate_utf8(item["uuid"], UUID_MAX_BYTES)
+    u = uuid_str.encode("utf-8")
     out += len(u).to_bytes(1, "little")
     out += u
-    out += b"\x00" * (64 - len(u))
+    out += b"\x00" * (UUID_MAX_BYTES - len(u))
 
-    t = item["title"].encode("utf-8")
+    title_str = _truncate_utf8(item["title"], TITLE_MAX_BYTES)
+    t = title_str.encode("utf-8")
     out += len(t).to_bytes(1, "little")
     out += t
-    out += b"\x00" * (66 - len(t))
+    out += b"\x00" * (TITLE_MAX_BYTES - len(t))
     return bytes(out)
 
 
@@ -125,6 +146,9 @@ def load_playlist(playlist_bin: Path) -> Node:
 
     raw_items: list[dict] = []
     offset = 0
+    # An item is at minimum ITEM_SIZE bytes, but can be larger if a previous
+    # version of the writer overflowed the title block. Stop when there's not
+    # enough room for even a minimal item.
     while offset + ITEM_SIZE <= len(data):
         item, offset = _read_item(data, offset)
         raw_items.append(item)
@@ -196,12 +220,22 @@ def new_story(title: str, audio_path: Path | None = None, image_path: Path | Non
     )
 
 
-def save_playlist(root: Node, target_dir: Path) -> None:
+ProgressCb = Callable[[int, int, str], None]
+
+
+def save_playlist(
+    root: Node,
+    target_dir: Path,
+    progress: ProgressCb | None = None,
+) -> None:
     """Serialize the tree to playlist.bin + copy media files into target_dir.
 
     Files at target_dir/<uuid>.jpg|.mp3 are overwritten when a node's
     current image_path/audio_path points elsewhere. Orphaned <uuid>.jpg|.mp3
     files (no longer referenced by any node) are removed.
+
+    If ``progress`` is given, it is called as ``progress(done, total, label)``
+    before each file copy and final cleanup step.
     """
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -209,6 +243,8 @@ def save_playlist(root: Node, target_dir: Path) -> None:
     flat: list[tuple[Node, int, int, int]] = []  # (node, id, parent_id, order)
     _flatten(root, parent_id=0, counter=[0], out=flat)
 
+    # Count copy operations up front so the caller can show a real progress bar.
+    copy_ops: list[tuple[Path, Path]] = []
     referenced_uuids: set[str] = set()
     raw_items: list[dict] = []
     for node, node_id, parent_id, order in flat:
@@ -227,17 +263,23 @@ def save_playlist(root: Node, target_dir: Path) -> None:
                 "title": node.title,
             }
         )
-
         if node.type == TYPE_ROOT:
             continue
-
         referenced_uuids.add(node.uuid)
         if node.image_path is not None:
-            dst = target_dir / f"{node.uuid}.jpg"
-            _copy_if_different(node.image_path, dst)
+            copy_ops.append((node.image_path, target_dir / f"{node.uuid}.jpg"))
         if node.is_story and node.audio_path is not None:
-            dst = target_dir / f"{node.uuid}.mp3"
-            _copy_if_different(node.audio_path, dst)
+            copy_ops.append((node.audio_path, target_dir / f"{node.uuid}.mp3"))
+
+    total_steps = len(copy_ops) + 1  # +1 for the playlist.bin write
+
+    for i, (src, dst) in enumerate(copy_ops):
+        if progress is not None:
+            progress(i, total_steps, dst.name)
+        _copy_if_different(src, dst)
+
+    if progress is not None:
+        progress(len(copy_ops), total_steps, "playlist.bin")
 
     for existing in target_dir.glob("*"):
         if not existing.is_file():
@@ -250,6 +292,9 @@ def save_playlist(root: Node, target_dir: Path) -> None:
     with playlist_bin.open("wb") as f:
         for it in raw_items:
             f.write(_write_item(it))
+
+    if progress is not None:
+        progress(total_steps, total_steps, "Done")
 
 
 def _flatten(node: Node, parent_id: int, counter: list[int], out: list) -> None:
